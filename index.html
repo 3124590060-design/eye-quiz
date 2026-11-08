@@ -409,7 +409,7 @@ function redoStats() {
 function buildList(anchor) {
   CNT = chapterCount();
   if (S.view === 'redo') {
-    let idxs = (S.redo ? S.redo.list : []).filter(i => Number.isInteger(i) && DATA[i] && !DATA[i].dup && !S.cut[i] && redoTypeOK(DATA[i]));
+    let idxs = (S.redo ? S.redo.list : []).filter(i => Number.isInteger(i) && DATA[i] && !DATA[i].dup && !S.cut[i]);
     if (S.q) { const needle = norm(S.q); idxs = idxs.filter(i => norm(DATA[i].s).includes(needle)); }
     view.list = idxs;
     if (anchor != null) {
@@ -865,6 +865,10 @@ function cutToggle() {
     return;
   }
   S.cut[i] = 1;
+  if (S.view === 'redo' && S.redo) {
+    S.redo.list = S.redo.list.filter(x => x !== i);
+    delete S.redo.done[i];
+  }
   save();
   if (B.active) {
     const p = view.list.indexOf(i);
