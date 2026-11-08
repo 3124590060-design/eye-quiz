@@ -81,6 +81,25 @@ input[type=search]:focus{border-color:var(--accent)}
   background:var(--bg);color:var(--ink);font-size:12.5px}
 .batchbox button{padding:5px 10px;border:1px solid var(--accent);color:var(--accent);background:transparent;
   border-radius:7px;font-size:12.5px;font-weight:600;white-space:nowrap}
+.redobox{margin:2px 4px 12px}
+.redobox select{display:block;width:100%;margin-bottom:6px;padding:5px 8px;border:1px solid var(--line);
+  border-radius:7px;background:var(--bg);color:var(--ink);font-size:12.5px}
+.redobox #startRedoWrong{width:100%;border-style:solid;background:var(--accent-soft)}
+.redobox #resumeRedoWrong{margin:6px 0 0;border-style:solid;border-color:var(--line)}
+.redobox .redohint{font-size:11.5px;color:var(--sub);margin-top:6px;line-height:1.45}
+.redobar{display:none;max-width:820px;margin:0 auto 12px;padding:10px 14px;border:1px solid var(--accent);
+  border-radius:12px;background:var(--accent-soft);align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--sub)}
+.redobar.show{display:flex}
+.redobar.done{border-color:var(--ok);background:var(--ok-soft)}
+.redobar .rlab{display:flex;align-items:baseline;gap:8px;color:var(--ink)}
+.redobar .rlab b{font-weight:650}
+.redobar .rlab span{font-size:11.5px;color:var(--sub)}
+.redobar .rmeta{font-variant-numeric:tabular-nums}
+.redobar .racts{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+.redobar .racts button{padding:4px 9px;border:1px solid var(--accent);color:var(--accent);background:var(--card);
+  border-radius:7px;font-size:12px;font-weight:600}
+.redobar.done .racts button{border-color:var(--ok);color:var(--ok)}
+.redobar .racts button:hover{filter:brightness(.95)}
 .batchresult{display:none;max-width:820px;margin:0 auto 14px;padding:14px 16px;
   border:1px solid var(--accent);background:var(--accent-soft);border-radius:12px}
 .batchresult.show{display:block}
@@ -231,6 +250,13 @@ input[type=search]:focus{border-color:var(--accent)}
     <button class="rangebtn" id="exportWrong">导出错题 Word（0）</button>
     <button class="rangebtn" id="exportFav">导出收藏 Word（0）</button>
     <button class="rangebtn" id="redoRange">重做当前范围</button>
+    <div class="batchbox redobox">
+      <div class="blabel">错题重做 · 固定一章</div>
+      <select id="redoChapter" title="选择固定重做的章节"></select>
+      <button id="startRedoWrong">开始重做本章错题</button>
+      <button class="rangebtn" id="resumeRedoWrong" style="display:none">继续上次固定错题</button>
+      <div class="redohint" id="redoHint"></div>
+    </div>
     <label class="dupToggle"><input type="checkbox" id="showDup"> 显示重复 / 隐藏题（<span id="dupCount">0</span>）</label>
     <label class="dupToggle"><input type="checkbox" id="autoNext"> 答对自动跳下一题</label>
     <div class="typebox">
@@ -266,6 +292,7 @@ input[type=search]:focus{border-color:var(--accent)}
       <div class="prog"><i id="progOk"></i><i id="progBad"></i><i id="progSel"></i></div>
       <div class="stat" id="stat"></div>
     </div>
+    <div id="redoBar" class="redobar"></div>
     <div id="batchResult" class="batchresult"></div>
     <div id="sheet" class="sheet"></div>
     <div id="stage"></div>
@@ -305,6 +332,15 @@ S.fav = S.fav || {};
 S.unsure = S.unsure || {};
 Object.keys(S.ans).forEach(k => { if (S.ans[k] && S.ans[k].u) { S.unsure[k] = 1; delete S.ans[k].u; } });
 S.chapter = S.chapter || '眼科学基础';
+S.redo = (S.redo && Array.isArray(S.redo.list)) ? S.redo : null;
+S.redoChapter = S.redoChapter || S.chapter;
+if (S.redo) {
+  S.redo.ch = String(S.redo.ch || S.chapter);
+  S.redo.list = S.redo.list.filter(i => Number.isInteger(i) && DATA[i] && !DATA[i].dup && !S.cut[i]);
+  S.redo.done = (S.redo.done && typeof S.redo.done === 'object') ? S.redo.done : {};
+  if (!S.redo.list.length) S.redo = null;
+}
+if (S.view === 'redo' && !S.redo) S.view = 'chapter';
 S.q = '';
 
 const view = { list: [], pos: 0, sel: new Set(), revealed: false, stale: false };
@@ -350,8 +386,43 @@ function setProg(ok, bad, sel, total) {
   $('#progSel').style.width = (sel / t * 100) + '%';
 }
 
+function isWrongIdx(i) {
+  return !!((S.ans[i] && !S.ans[i].ok) || S.unsure[i]);
+}
+function redoTypeOK(q) {
+  return S.type === 'all' || isMulti(q) === (S.type === 'multi');
+}
+function redoStats() {
+  const list = (S.redo && S.redo.list) || [];
+  const doneMap = (S.redo && S.redo.done) || {};
+  let done = 0, ok = 0;
+  list.forEach(i => {
+    if (!doneMap[i]) return;
+    const a = S.ans[i];
+    if (!a) return;
+    done++;
+    if (a.ok && !S.unsure[i]) ok++;
+  });
+  return { n: list.length, done, ok, bad: done - ok, left: list.length - done };
+}
+
 function buildList(anchor) {
   CNT = chapterCount();
+  if (S.view === 'redo') {
+    let idxs = (S.redo ? S.redo.list : []).filter(i => Number.isInteger(i) && DATA[i] && !DATA[i].dup && !S.cut[i] && redoTypeOK(DATA[i]));
+    if (S.q) { const needle = norm(S.q); idxs = idxs.filter(i => norm(DATA[i].s).includes(needle)); }
+    view.list = idxs;
+    if (anchor != null) {
+      const p = idxs.indexOf(anchor);
+      view.pos = p >= 0 ? p : Math.min(view.pos, Math.max(0, idxs.length - 1));
+    } else {
+      view.pos = 0;
+    }
+    view.sel = new Set();
+    view.revealed = false;
+    view.stale = false;
+    return;
+  }
   const cutView = S.view === 'cut';
   const favView = S.view === 'fav';
   let all = DATA.map((_, i) => i).filter(i => favView ? !!S.fav[i] : (cutView ? !!S.cut[i] : !S.cut[i]));
@@ -437,6 +508,39 @@ function renderSide() {
     const m = DATA.filter(q => !q.dup && isMulti(q)).length;
     tc.textContent = `单 ${s} · 多 ${m}`;
   }
+  const rc = $('#redoChapter');
+  if (rc) {
+    const counts = {};
+    DATA.forEach((q, i) => {
+      if (q.dup || S.cut[i] || !typeOK(q) || !isWrongIdx(i)) return;
+      const ch = q.c || '综合';
+      counts[ch] = (counts[ch] || 0) + 1;
+    });
+    const prev = rc.value || S.redoChapter || S.chapter;
+    rc.innerHTML = CHAPTERS.map(c => `<option value="${esc(c.n)}">${esc(c.n)}（${counts[c.n] || 0} 道错题）</option>`).join('');
+    if ([...rc.options].some(o => o.value === prev)) rc.value = prev;
+    else if (CHAPTERS.length) rc.value = CHAPTERS[0].n;
+    const btn = $('#startRedoWrong');
+    const label = () => {
+      if (btn) btn.textContent = `开始重做本章错题（${counts[rc.value] || 0}）`;
+    };
+    label();
+    rc.onchange = () => { S.redoChapter = rc.value; save(); label(); };
+  }
+  const resume = $('#resumeRedoWrong');
+  if (resume) {
+    const n = S.redo ? S.redo.list.filter(i => !S.cut[i] && DATA[i]).length : 0;
+    if (n && S.view !== 'redo') {
+      resume.style.display = '';
+      resume.textContent = `继续上次固定（${S.redo.ch} · ${n} 题）`;
+    } else {
+      resume.style.display = 'none';
+    }
+  }
+  const rh = $('#redoHint');
+  if (rh) rh.textContent = S.redo
+    ? `上次固定：${S.redo.ch} · ${S.redo.list.length} 题（会保留，随时继续）`
+    : '只收本章「答错 / 标不确定」的题；固定后不随全局筛选变化。';
 }
 
 function renderOptions(q, state) {
@@ -512,23 +616,25 @@ function render() {
   updateGlobal();
   renderSide();
   if (!view.list.length) {
-    $('#stage').innerHTML = `<div class="empty">这个范围里没有题了。${S.type !== 'all' ? `（当前筛选：${S.type === 'multi' ? '多选题' : '单选题'}）` : ''}<br>${S.view === 'wrong' ? '错题本已清空 —— 换一节继续吧。' : S.view === 'fav' ? '还没有收藏题。题卡右上角「☆ 收藏」可以把想回看的题存起来。' : S.view === 'unsure' ? '还没有标不确定的题。题卡右上角「标记不确定」随时能标，不用先作答。' : S.view === 'cut' ? '还没有斩过题。题卡右上角「斩题」可以把已经会的剔出去。' : ''}</div>`;
+    $('#stage').innerHTML = `<div class="empty">这个范围里没有题了。${S.type !== 'all' ? `（当前筛选：${S.type === 'multi' ? '多选题' : '单选题'}）` : ''}<br>${S.view === 'wrong' ? '错题本已清空 —— 换一节继续吧。' : S.view === 'fav' ? '还没有收藏题。题卡右上角「☆ 收藏」可以把想回看的题存起来。' : S.view === 'unsure' ? '还没有标不确定的题。题卡右上角「标记不确定」随时能标，不用先作答。' : S.view === 'cut' ? '还没有斩过题。题卡右上角「斩题」可以把已经会的剔出去。' : S.view === 'redo' ? '这组固定错题已经清空了，点上方「退出」回章节。' : ''}</div>`;
     $('#crumb').textContent = '';
     setProg(0, 0, 0, 1);
     $('#stat').textContent = '';
     $('#submit').classList.remove('show');
+    renderRedoBar();
     ['batchSubmit', 'nextBatch', 'exitBatch'].forEach(id => { const el = $('#' + id); if (el) el.style.display = 'none'; });
     return;
   }
   const q = cur(), i = curIdx(), ans = answerOf(q);
   const pending = B.active && !B.submitted;
-  const rec = pending ? null : S.ans[i];
+  const rec = pending ? null : (S.view === 'redo' && S.redo && !(S.redo.done && S.redo.done[i]) ? null : S.ans[i]);
   const curSel = pending ? new Set((B.sel[i] || '').split('').filter(Boolean)) : view.sel;
   const answered = !pending && (!!rec || view.revealed || S.mode === 'read' || S.view === 'flag' || S.revealAll);
-  const st = stats(view.list);
+  const st = S.view === 'redo' ? redoStats() : stats(view.list);
   const label = B.active ? `批量做题 · ${view.pos + 1}/${view.list.length}`
     : S.q ? '搜索结果' : S.view === 'all' ? '全部' : S.view === 'todo' ? '未做'
-      : S.view === 'wrong' ? '错题本' : S.view === 'fav' ? '收藏的题' : S.view === 'unsure' ? '标记不确定' : S.view === 'flag' ? '答案存疑' : S.view === 'cut' ? '已斩的题' : S.chapter;
+      : S.view === 'wrong' ? '错题本' : S.view === 'fav' ? '收藏的题' : S.view === 'unsure' ? '标记不确定' : S.view === 'flag' ? '答案存疑' : S.view === 'cut' ? '已斩的题'
+        : S.view === 'redo' && S.redo ? `重做错题 · ${S.redo.ch}` : S.chapter;
   $('#crumb').textContent = label;
   const doneInList = pending ? view.list.filter(x => B.sel[x]).length : st.done;
   if (pending) setProg(0, 0, doneInList, view.list.length);
@@ -587,6 +693,7 @@ function render() {
   $('#reveal').style.visibility = (!pending && !answered && S.mode !== 'read' && !S.revealAll) ? 'visible' : 'hidden';
   renderBatchResult();
   renderSheet();
+  renderRedoBar();
 }
 
 function renderBatchResult() {
@@ -627,10 +734,106 @@ function renderSheet() {
   });
 }
 
+function renderRedoBar() {
+  const el = $('#redoBar');
+  if (!el) return;
+  if (S.view !== 'redo' || !S.redo || !S.redo.list.length) {
+    el.classList.remove('show', 'done');
+    el.innerHTML = '';
+    return;
+  }
+  const st = redoStats();
+  const finished = st.n > 0 && st.done >= st.n;
+  el.classList.toggle('done', finished);
+  el.classList.add('show');
+  el.innerHTML = `<div class="rlab"><b>固定重做 · ${esc(S.redo.ch)}</b><span>${st.n} 题</span></div>
+    <div class="rmeta">${finished ? '本轮完成' : '进行中'} · 已做 ${st.done}/${st.n} · 对 ${st.ok} · 错 ${st.bad}</div>
+    <div class="racts">
+      ${finished && st.bad ? `<button data-act="wrong">再刷仍错（${st.bad}）</button>` : ''}
+      <button data-act="all">重刷全部（${st.n}）</button>
+      <button data-act="exit">退出</button>
+    </div>`;
+  el.querySelectorAll('.racts button').forEach(b => b.onclick = () => {
+    const act = b.dataset.act;
+    if (act === 'all') restartRedo();
+    else if (act === 'wrong') retryWrongRedo();
+    else exitRedo();
+  });
+}
+
+function startRedoWrong() {
+  resetBatch();
+  const sel = $('#redoChapter');
+  const ch = sel ? sel.value : (S.redoChapter || S.chapter);
+  const list = DATA.map((_, i) => i).filter(i => !DATA[i].dup && !S.cut[i] && redoTypeOK(DATA[i]) && (DATA[i].c || '综合') === ch && isWrongIdx(i));
+  if (!list.length) {
+    alert(`「${ch}」现在没有错题。先去这一章做题，答错或标不确定后再来。`);
+    return;
+  }
+  if (S.redo && S.redo.list.length && (S.redo.ch !== ch || S.redo.list.join(',') !== list.join(','))) {
+    if (!confirm(`已有固定错题组「${S.redo.ch}」${S.redo.list.length} 题，替换成「${ch}」这 ${list.length} 题？`)) return;
+  }
+  S.redo = { ch, list, done: {}, at: Date.now() };
+  S.redoChapter = ch;
+  S.view = 'redo'; S.q = '';
+  const se = $('#search'); if (se) se.value = '';
+  view.pos = 0; view.sel = new Set(); view.revealed = false; view.stale = false;
+  save();
+  buildList(); render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function continueRedo() {
+  if (!S.redo) return;
+  resetBatch();
+  S.view = 'redo'; S.q = '';
+  const se = $('#search'); if (se) se.value = '';
+  S.chapter = S.redo.ch;
+  S.redoChapter = S.redo.ch;
+  save();
+  buildList(); render();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function restartRedo() {
+  if (!S.redo || !S.redo.list.length) return;
+  const n = S.redo.list.length;
+  if (!confirm(`重刷全部 ${n} 题？本轮从第 1 题重新开始，题库记录不动。`)) return;
+  S.redo.done = {};
+  S.redo.at = Date.now();
+  save();
+  view.pos = 0; view.sel = new Set(); view.revealed = false; view.stale = false;
+  buildList(); render();
+}
+
+function retryWrongRedo() {
+  if (!S.redo) return;
+  const remain = S.redo.list.filter(i => S.redo.done[i] && ((S.ans[i] && !S.ans[i].ok) || S.unsure[i]));
+  if (!remain.length) { alert('没有仍错的题，全对了。'); return; }
+  if (!confirm(`只保留仍错的 ${remain.length} 题再刷一遍？`)) return;
+  S.redo.list = remain;
+  S.redo.done = {};
+  S.redo.at = Date.now();
+  save();
+  view.pos = 0; view.sel = new Set(); view.revealed = false; view.stale = false;
+  buildList(); render();
+}
+
+function exitRedo() {
+  if (S.redo) {
+    S.chapter = S.redo.ch;
+    S.redoChapter = S.redo.ch;
+  }
+  S.view = 'chapter'; S.q = '';
+  const se = $('#search'); if (se) se.value = '';
+  buildList(); render();
+}
+
 function redo() {
   const i = curIdx();
   if (!S.ans[i]) return;
   delete S.ans[i];
+  if (S.view === 'redo' && S.redo) delete S.redo.done[i];
   save();
   view.sel = new Set();
   view.revealed = false;
@@ -706,8 +909,9 @@ function favToggle() {
 function pick(L) {
   if (S.mode === 'read' || S.view === 'flag' || S.revealAll) return;
   if (B.active && !B.submitted) { batchPick(L); return; }
-  const q = cur(), ans = answerOf(q);
-  if (S.ans[curIdx()] || view.revealed) return;
+  const q = cur(), ans = answerOf(q), i = curIdx();
+  const freshRedo = S.view === 'redo' && S.redo && !(S.redo.done && S.redo.done[i]);
+  if ((S.ans[i] && !freshRedo) || view.revealed) return;
   if (ans.length > 1) {
     view.sel.has(L) ? view.sel.delete(L) : view.sel.add(L);
     render();
@@ -736,7 +940,8 @@ function submit(str) {
   const sel = str || [...view.sel].sort().join('');
   if (!sel) return;
   S.ans[i] = { s: sel, ok: sel === ans };
-  if (!S.ans[i].ok || S.view === 'wrong' || S.view === 'todo') view.stale = true;
+  if (S.view === 'redo' && S.redo) S.redo.done[i] = 1;
+  if (S.view !== 'redo' && (!S.ans[i].ok || S.view === 'wrong' || S.view === 'todo')) view.stale = true;
   save();
   view.revealed = true;
   render();
@@ -831,6 +1036,8 @@ $('#next').onclick = () => move(1);
 $('#sheetBtn').onclick = () => { $('#sheet').classList.toggle('show'); renderSheet(); };
 $('#reveal').onclick = () => { view.revealed = true; render(); };
 $('#redoRange').onclick = redoRange;
+$('#startRedoWrong').onclick = startRedoWrong;
+$('#resumeRedoWrong').onclick = continueRedo;
 $('#dupCount').textContent = DATA.filter(q => q.dup).length;
 $('#showDup').checked = S.showDup;
 $('#showDup').onchange = e => { S.showDup = e.target.checked; save(); resetBatch(); buildList(); render(); };
@@ -863,7 +1070,7 @@ $('#search').oninput = e => {
   buildList(); render();
 };
 $('#reset').onclick = () => {
-  if (confirm('清空本机的做题记录、错题本和不确定标记？收藏的题会保留。')) { S.ans = {}; S.unsure = {}; save(); buildList(); render(); }
+  if (confirm('清空本机的做题记录、错题本和不确定标记？收藏的题会保留。')) { S.ans = {}; S.unsure = {}; if (S.redo) S.redo.done = {}; save(); buildList(); render(); }
 };
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
